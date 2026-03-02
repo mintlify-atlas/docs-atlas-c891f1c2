@@ -1,0 +1,74 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "bun-smtp",
+  "projectDescription": "A fast SMTP/LMTP server library built natively on Bun",
+  "theme": "palm",
+  "primaryColor": "#FBF0DF",
+  "lightColor": "#8B7355",
+  "darkColor": "#4A3728",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/authentication",
+              "guides/tls",
+              "guides/migration"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/smtp-server",
+              "api/configuration",
+              "api/callbacks",
+              "api/session",
+              "api/events"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/basic-server",
+              "examples/auth-server",
+              "examples/tls-server",
+              "examples/lmtp-server"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Bun-native implementation using Bun.listen() and socket.upgradeTLS()",
+    "Drop-in replacement for smtp-server npm package",
+    "Full SMTP/LMTP protocol support with STARTTLS",
+    "SASL authentication (PLAIN, LOGIN, CRAM-MD5, XOAUTH2)",
+    "TypeScript-first with comprehensive type definitions",
+    "Zero dependencies for high performance"
+  ],
+  "publicApiSurface": [
+    "SMTPServer",
+    "SMTPServerOptions",
+    "SMTPSession",
+    "SMTPAddress",
+    "AuthObject",
+    "AuthResponse",
+    "OnConnectCallback",
+    "OnSecureCallback",
+    "OnAuthCallback",
+    "OnMailFromCallback",
+    "OnRcptToCallback",
+    "OnDataCallback",
+    "OnCloseCallback",
+    "DataStream",
+    "TLSOptions"
+  ]
+}
