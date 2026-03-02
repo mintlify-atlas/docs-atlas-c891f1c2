@@ -1,0 +1,374 @@
+---
+title: Configuration
+description: Complete reference for SMTPServer constructor options
+---
+
+Pass options to the `SMTPServer` constructor:
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  // options here
+});
+```
+
+---
+
+## Connection
+
+<ParamField path="secure" type="boolean" default={false}>
+  Start in implicit TLS mode (port 465 style). When `false`, STARTTLS is offered instead.
+</ParamField>
+
+<ParamField path="needsUpgrade" type="boolean" default={false}>
+  Reject AUTH and MAIL until the client completes STARTTLS.
+</ParamField>
+
+<ParamField path="name" type="string" default="system hostname">
+  Server hostname included in the `220` greeting and EHLO response.
+</ParamField>
+
+<ParamField path="banner" type="string" default="">
+  Extra text appended to the `220` greeting line.
+</ParamField>
+
+<ParamField path="lmtp" type="boolean" default={false}>
+  Use LMTP instead of SMTP. Clients open with `LHLO` and `onData` may return per-recipient responses.
+</ParamField>
+
+<ParamField path="heloResponse" type="string" default="%s Nice to meet you, %s">
+  Format string for the HELO/EHLO response. First `%s` is the server name, second is the client hostname.
+</ParamField>
+
+---
+
+## Authentication
+
+<ParamField path="authMethods" type="string[]" default={["PLAIN", "LOGIN"]}>
+  SASL methods advertised in EHLO. Supported values: `"PLAIN"`, `"LOGIN"`, `"CRAM-MD5"`, `"XOAUTH2"`.
+</ParamField>
+
+<ParamField path="authOptional" type="boolean" default={false}>
+  Allow clients to skip AUTH entirely.
+</ParamField>
+
+<ParamField path="allowInsecureAuth" type="boolean" default={false}>
+  Allow AUTH over a plain (non-TLS) connection.
+</ParamField>
+
+<ParamField path="authRequiredMessage" type="string" optional>
+  Custom error message for the `530` response when auth is required.
+</ParamField>
+
+<Info>
+By default, AUTH is disabled over non-TLS connections. Set `allowInsecureAuth: true` to permit plaintext authentication.
+</Info>
+
+---
+
+## Capability Flags
+
+These options hide extensions from the EHLO response. The extension still works — it is just not advertised.
+
+<ParamField path="hideSTARTTLS" type="boolean" default={false}>
+  Hide `STARTTLS` from EHLO.
+</ParamField>
+
+<ParamField path="hideSize" type="boolean" default={false}>
+  Hide the `SIZE` extension.
+</ParamField>
+
+<ParamField path="hidePIPELINING" type="boolean" default={false}>
+  Hide `PIPELINING`.
+</ParamField>
+
+<ParamField path="hideDSN" type="boolean" default={false}>
+  Hide `DSN` (Delivery Status Notification).
+</ParamField>
+
+<ParamField path="hideENHANCEDSTATUSCODES" type="boolean" default={false}>
+  Hide `ENHANCEDSTATUSCODES`.
+</ParamField>
+
+<ParamField path="hideREQUIRETLS" type="boolean" default={false}>
+  Hide `REQUIRETLS`.
+</ParamField>
+
+<ParamField path="hide8BITMIME" type="boolean" default={false}>
+  Hide `8BITMIME`.
+</ParamField>
+
+<ParamField path="hideSMTPUTF8" type="boolean" default={false}>
+  Hide `SMTPUTF8`.
+</ParamField>
+
+<ParamField path="disabledCommands" type="string[]" default={[]}>
+  Block specific SMTP commands entirely (e.g. `["AUTH", "STARTTLS"]`).
+</ParamField>
+
+---
+
+## Limits
+
+<ParamField path="size" type="number" optional>
+  Maximum message size in bytes. Advertised via the `SIZE` extension. The `onData` stream's `sizeExceeded` flag is set when the limit is hit.
+</ParamField>
+
+<ParamField path="maxClients" type="number" optional>
+  Maximum number of simultaneous connections. New connections are rejected with `421` when the limit is reached.
+</ParamField>
+
+<ParamField path="socketTimeout" type="number" default={60000}>
+  Milliseconds of inactivity before an idle connection is closed.
+</ParamField>
+
+<ParamField path="closeTimeout" type="number" default={30000}>
+  Milliseconds to wait for connections to drain during `server.close()`. Connections still open after this are forcibly terminated.
+</ParamField>
+
+<ParamField path="maxAllowedUnauthenticatedCommands" type="number | false" default={10}>
+  Maximum commands allowed before authentication. Set to `false` to disable the limit.
+</ParamField>
+
+<Warning>
+Setting `maxAllowedUnauthenticatedCommands` to `false` may expose your server to abuse. Use with caution.
+</Warning>
+
+---
+
+## Proxy / X-headers
+
+<ParamField path="useXClient" type="boolean" default={false}>
+  Trust Postfix `XCLIENT` headers. When enabled, `session.xClient` is populated.
+</ParamField>
+
+<ParamField path="useXForward" type="boolean" default={false}>
+  Trust Postfix `XFORWARD` headers. When enabled, `session.xForward` is populated.
+</ParamField>
+
+<ParamField path="useProxy" type="boolean | string[]" default={false}>
+  Parse HAProxy `PROXY` protocol header. Pass an array of trusted proxy IP addresses to restrict which proxies are trusted.
+</ParamField>
+
+<Note>
+Only enable proxy headers if you trust the upstream proxy. Malicious clients can forge these headers.
+</Note>
+
+---
+
+## DNS
+
+<ParamField path="disableReverseLookup" type="boolean" default={false}>
+  Skip reverse DNS lookup on new connections. When `false`, `session.clientHostname` is resolved from the client's IP.
+</ParamField>
+
+<ParamField path="resolver" type="object" optional>
+  Custom DNS resolver. Must implement `reverse(ip, callback)` with the same signature as `dns.reverse`.
+  
+  ```typescript
+  {
+    reverse: (
+      ip: string,
+      callback: (err: Error | null, hostnames?: string[]) => void
+    ) => void
+  }
+  ```
+</ParamField>
+
+---
+
+## TLS
+
+All standard TLS options. See the [TLS & STARTTLS guide](/guides/tls) for usage examples.
+
+<ParamField path="key" type="string | Buffer" optional>
+  Private key in PEM format.
+</ParamField>
+
+<ParamField path="cert" type="string | Buffer" optional>
+  Certificate in PEM format.
+</ParamField>
+
+<ParamField path="ca" type="string | Buffer | Array" optional>
+  CA bundle for client certificate verification.
+</ParamField>
+
+<ParamField path="requestCert" type="boolean" optional>
+  Request a client certificate during TLS handshake.
+</ParamField>
+
+<ParamField path="rejectUnauthorized" type="boolean" optional>
+  Reject clients with invalid or unverifiable certificates.
+</ParamField>
+
+<ParamField path="minVersion" type="string" optional>
+  Minimum TLS version string (e.g. `"TLSv1.2"`).
+</ParamField>
+
+<ParamField path="maxVersion" type="string" optional>
+  Maximum TLS version string.
+</ParamField>
+
+<ParamField path="sniOptions" type="Record<string, TLSOptions> | Map<string, TLSOptions>" optional>
+  Per-hostname TLS configuration for SNI (Server Name Indication).
+  
+  ```typescript
+  sniOptions: {
+    "mail.example.com": {
+      key: exampleKey,
+      cert: exampleCert
+    },
+    "mail.other.com": {
+      key: otherKey,
+      cert: otherCert
+    }
+  }
+  ```
+</ParamField>
+
+<Info>
+If no TLS options are provided, the server uses a default self-signed certificate for development.
+</Info>
+
+---
+
+## Callbacks
+
+All lifecycle callbacks can be set as constructor options. See [Callbacks](/api/callbacks) for full signatures and examples.
+
+<ParamField path="onConnect" type="OnConnectCallback" optional>
+  Called on new connection.
+  
+  ```typescript
+  (session: SMTPSession, callback: (err?: Error | null) => void) => void
+  ```
+</ParamField>
+
+<ParamField path="onSecure" type="OnSecureCallback" optional>
+  Called after TLS handshake.
+  
+  ```typescript
+  (
+    socket: Socket,
+    session: SMTPSession,
+    callback: (err?: Error | null) => void
+  ) => void
+  ```
+</ParamField>
+
+<ParamField path="onAuth" type="OnAuthCallback" optional>
+  Called on AUTH attempt.
+  
+  ```typescript
+  (
+    auth: AuthObject,
+    session: SMTPSession,
+    callback: (err: Error | null, response?: AuthResponse) => void
+  ) => void
+  ```
+</ParamField>
+
+<ParamField path="onMailFrom" type="OnMailFromCallback" optional>
+  Called on MAIL FROM.
+  
+  ```typescript
+  (
+    address: SMTPAddress,
+    session: SMTPSession,
+    callback: (err?: Error | null) => void
+  ) => void
+  ```
+</ParamField>
+
+<ParamField path="onRcptTo" type="OnRcptToCallback" optional>
+  Called on RCPT TO.
+  
+  ```typescript
+  (
+    address: SMTPAddress,
+    session: SMTPSession,
+    callback: (err?: Error | null) => void
+  ) => void
+  ```
+</ParamField>
+
+<ParamField path="onData" type="OnDataCallback" optional>
+  Called when DATA transfer begins.
+  
+  ```typescript
+  (
+    stream: DataStream,
+    session: SMTPSession,
+    callback: (
+      err: Error | null,
+      message?: string | Array<string | SMTPError>
+    ) => void
+  ) => void
+  ```
+</ParamField>
+
+<ParamField path="onClose" type="OnCloseCallback" optional>
+  Called when connection closes.
+  
+  ```typescript
+  (session: SMTPSession) => void
+  ```
+</ParamField>
+
+---
+
+## Complete Example
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  // Connection
+  secure: false,
+  name: "mail.example.com",
+  banner: "Welcome to Example Mail",
+  
+  // Authentication
+  authMethods: ["PLAIN", "LOGIN", "CRAM-MD5"],
+  authOptional: false,
+  allowInsecureAuth: false,
+  
+  // Limits
+  size: 10 * 1024 * 1024, // 10 MB
+  maxClients: 100,
+  socketTimeout: 60000,
+  
+  // TLS
+  key: await Bun.file("key.pem").text(),
+  cert: await Bun.file("cert.pem").text(),
+  
+  // Callbacks
+  onAuth(auth, session, callback) {
+    if (auth.username === "user" && auth.password === "pass") {
+      callback(null, { user: auth.username });
+    } else {
+      callback(new Error("Invalid credentials"));
+    }
+  },
+  
+  onData(stream, session, callback) {
+    const chunks = [];
+    stream.pipeTo(new WritableStream({
+      write(chunk) {
+        chunks.push(chunk);
+      },
+      close() {
+        const message = Buffer.concat(chunks);
+        console.log(`Received ${message.length} bytes`);
+        callback(null);
+      },
+      abort(err) {
+        callback(err);
+      }
+    }));
+  }
+});
+
+server.listen(2525);
+```

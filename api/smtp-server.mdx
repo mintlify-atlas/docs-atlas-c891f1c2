@@ -1,0 +1,241 @@
+---
+title: SMTPServer
+description: The main SMTPServer class and its methods
+---
+
+## Constructor
+
+Create a new SMTP server instance.
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer(options);
+```
+
+<ParamField path="options" type="SMTPServerOptions" optional>
+  Configuration options for the server. See [Configuration](/api/configuration) for all available options.
+</ParamField>
+
+---
+
+## Methods
+
+### listen()
+
+Start the SMTP server and bind to a port.
+
+<CodeGroup>
+```typescript Port only
+server.listen(2525);
+```
+
+```typescript Port and hostname
+server.listen(2525, "0.0.0.0");
+```
+
+```typescript With callback
+server.listen(2525, "localhost", () => {
+  console.log("Server is listening");
+});
+```
+
+```typescript Options object
+server.listen({
+  port: 2525,
+  hostname: "0.0.0.0"
+}, () => {
+  console.log("Server started");
+});
+```
+</CodeGroup>
+
+**Parameters:**
+
+<ParamField path="port" type="number">
+  Port number to bind to
+</ParamField>
+
+<ParamField path="hostname" type="string" optional default="0.0.0.0">
+  Hostname or IP address to bind to
+</ParamField>
+
+<ParamField path="callback" type="() => void" optional>
+  Function called when the server starts listening
+</ParamField>
+
+**Returns:** `this` (for chaining)
+
+<Info>
+The `listening` event is emitted after the server successfully binds to the port.
+</Info>
+
+---
+
+### close()
+
+Gracefully shut down the server. Active connections are allowed to finish within the `closeTimeout` period.
+
+```typescript
+server.close(() => {
+  console.log("Server has shut down");
+});
+```
+
+<ParamField path="callback" type="() => void" optional>
+  Function called when the server has fully closed
+</ParamField>
+
+**Returns:** `this` (for chaining)
+
+<Warning>
+Connections still active after `closeTimeout` milliseconds are forcibly terminated.
+</Warning>
+
+---
+
+### updateSecureContext()
+
+Hot-reload TLS certificates without restarting the server. New connections will use the updated certificates.
+
+```typescript
+server.updateSecureContext({
+  key: await Bun.file("new-key.pem").text(),
+  cert: await Bun.file("new-cert.pem").text()
+});
+```
+
+<ParamField path="options" type="object" required>
+  <Expandable title="properties">
+    <ParamField path="key" type="string | Buffer" optional>
+      New private key in PEM format
+    </ParamField>
+    <ParamField path="cert" type="string | Buffer" optional>
+      New certificate in PEM format
+    </ParamField>
+    <ParamField path="ca" type="string | Buffer | Array" optional>
+      New CA bundle
+    </ParamField>
+  </Expandable>
+</ParamField>
+
+---
+
+## Event Methods
+
+### on()
+
+Register an event listener.
+
+```typescript
+server.on("error", (err) => {
+  console.error("Server error:", err);
+});
+```
+
+<ParamField path="event" type="string" required>
+  Event name. See [Events](/api/events) for available events.
+</ParamField>
+
+<ParamField path="listener" type="function" required>
+  Callback function to invoke when the event is emitted
+</ParamField>
+
+**Returns:** `this` (for chaining)
+
+---
+
+### once()
+
+Register a one-time event listener that is automatically removed after firing once.
+
+```typescript
+server.once("listening", () => {
+  console.log("Server started for the first time");
+});
+```
+
+<ParamField path="event" type="string" required>
+  Event name
+</ParamField>
+
+<ParamField path="listener" type="function" required>
+  Callback function to invoke once
+</ParamField>
+
+**Returns:** `this` (for chaining)
+
+---
+
+### off()
+
+Remove an event listener.
+
+```typescript
+const errorHandler = (err) => console.error(err);
+server.on("error", errorHandler);
+// Later...
+server.off("error", errorHandler);
+```
+
+<ParamField path="event" type="string" required>
+  Event name
+</ParamField>
+
+<ParamField path="listener" type="function" required>
+  The exact listener function to remove
+</ParamField>
+
+**Returns:** `this` (for chaining)
+
+---
+
+## Properties
+
+<ResponseField name="options" type="SMTPServerOptions">
+  The resolved configuration options (defaults merged with constructor options)
+</ResponseField>
+
+<ResponseField name="connections" type="Set<ConnectionContext>">
+  Set of currently active connections
+</ResponseField>
+
+<ResponseField name="closing" type="boolean">
+  Whether the server is in the process of shutting down
+</ResponseField>
+
+---
+
+## Example
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  secure: false,
+  authOptional: true,
+  onData(stream, session, callback) {
+    console.log(`Message from ${session.envelope.mailFrom.address}`);
+    stream.pipeTo(new WritableStream()).then(
+      () => callback(null),
+      (err) => callback(err)
+    );
+  }
+});
+
+server.on("error", (err) => {
+  console.error("SMTP Error:", err);
+});
+
+server.listen(2525, () => {
+  console.log("SMTP Server listening on port 2525");
+});
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
+```

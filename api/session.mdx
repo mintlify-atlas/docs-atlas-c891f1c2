@@ -1,0 +1,375 @@
+---
+title: Session & Envelope
+description: SMTPSession object and related types
+---
+
+Every callback receives a `session` object representing the current connection state.
+
+---
+
+## SMTPSession
+
+The main session object passed to all callbacks.
+
+<ResponseField name="id" type="string">
+  Unique connection identifier.
+</ResponseField>
+
+<ResponseField name="secure" type="boolean">
+  `true` if the connection is currently using TLS.
+</ResponseField>
+
+<ResponseField name="servername" type="string | undefined">
+  SNI hostname from the TLS handshake (if TLS is active).
+</ResponseField>
+
+<ResponseField name="localAddress" type="string">
+  Server IP address.
+</ResponseField>
+
+<ResponseField name="localPort" type="number">
+  Server port.
+</ResponseField>
+
+<ResponseField name="remoteAddress" type="string">
+  Client IP address.
+</ResponseField>
+
+<ResponseField name="remotePort" type="number">
+  Client port.
+</ResponseField>
+
+<ResponseField name="clientHostname" type="string">
+  Reverse-DNS hostname of the client. Falls back to `"[remoteAddress]"` if lookup fails or is disabled.
+</ResponseField>
+
+<ResponseField name="hostNameAppearsAs" type="string">
+  Hostname the client claimed in HELO/EHLO.
+</ResponseField>
+
+<ResponseField name="openingCommand" type="string">
+  The first command the client sent: `"HELO"`, `"EHLO"`, or `"LHLO"`.
+</ResponseField>
+
+<ResponseField name="transmissionType" type="string">
+  SMTP transmission type string, e.g. `"ESMTPSA"` (Extended SMTP with Auth).
+</ResponseField>
+
+<ResponseField name="tlsOptions" type="TLSCipherInfo | false">
+  TLS cipher info after TLS is established, `false` before. See [TLSCipherInfo](#tlscipherinfo) below.
+</ResponseField>
+
+<ResponseField name="user" type="unknown">
+  Value passed as `user` in a successful `onAuth` response. Use this to track the authenticated user.
+</ResponseField>
+
+<ResponseField name="transaction" type="number">
+  Number of completed mail transactions on this connection (incremented after each successful `onData`).
+</ResponseField>
+
+<ResponseField name="envelope" type="SMTPEnvelope">
+  Current mail envelope. See [SMTPEnvelope](#smtpenvelope) below.
+</ResponseField>
+
+<ResponseField name="xClient" type="Map<string, string | false>">
+  XCLIENT header values (when `useXClient: true`).
+</ResponseField>
+
+<ResponseField name="xForward" type="Map<string, string | false>">
+  XFORWARD header values (when `useXForward: true`).
+</ResponseField>
+
+---
+
+## TLSCipherInfo
+
+TLS cipher and protocol information, available after TLS handshake.
+
+<ResponseField name="name" type="string">
+  OpenSSL cipher name (e.g. `"ECDHE-RSA-AES128-GCM-SHA256"`).
+</ResponseField>
+
+<ResponseField name="standardName" type="string | undefined">
+  IANA cipher name.
+</ResponseField>
+
+<ResponseField name="version" type="string | undefined">
+  TLS protocol version (e.g. `"TLSv1.3"`).
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({
+  onSecure(socket, session, callback) {
+    console.log(session.tlsOptions);
+    // {
+    //   name: "ECDHE-RSA-AES128-GCM-SHA256",
+    //   standardName: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    //   version: "TLSv1.2"
+    // }
+    callback(null);
+  },
+});
+```
+
+---
+
+## SMTPEnvelope
+
+Available as `session.envelope`. Populated progressively as the client sends MAIL FROM and RCPT TO commands.
+
+<ResponseField name="mailFrom" type="SMTPAddress | false">
+  Sender address from MAIL FROM, or `false` before MAIL FROM is received.
+</ResponseField>
+
+<ResponseField name="rcptTo" type="SMTPAddress[]">
+  Array of accepted recipient addresses from RCPT TO.
+</ResponseField>
+
+<ResponseField name="bodyType" type="'7bit' | '8bitmime'">
+  Body encoding declared by the client.
+</ResponseField>
+
+<ResponseField name="smtpUtf8" type="boolean">
+  `true` if the client declared SMTPUTF8 support.
+</ResponseField>
+
+<ResponseField name="requireTLS" type="boolean">
+  `true` if the client sent REQUIRETLS (RFC 8689).
+</ResponseField>
+
+<ResponseField name="dsn" type="DSNEnvelope | undefined">
+  DSN envelope parameters. See [DSNEnvelope](#dsnenvelope) below.
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({
+  onData(stream, session, callback) {
+    const { envelope } = session;
+    
+    console.log("From:", envelope.mailFrom?.address);
+    console.log("To:", envelope.rcptTo.map(r => r.address));
+    console.log("UTF-8:", envelope.smtpUtf8);
+    
+    stream.pipeTo(new WritableStream()).then(
+      () => callback(null),
+      callback
+    );
+  },
+});
+```
+
+---
+
+## SMTPAddress
+
+Represents an email address from MAIL FROM or RCPT TO commands.
+
+<ResponseField name="address" type="string">
+  The email address (e.g. `"alice@example.com"`).
+</ResponseField>
+
+<ResponseField name="args" type="SMTPAddressArgs | false">
+  ESMTP parameters from the command, or `false` if none. See [SMTPAddressArgs](#smtpaddressargs) below.
+</ResponseField>
+
+<ResponseField name="dsn" type="DSNRcpt | undefined">
+  Per-recipient DSN parameters. See [DSNRcpt](#dsnrcpt) below.
+</ResponseField>
+
+---
+
+## SMTPAddressArgs
+
+ESMTP parameters parsed from the MAIL FROM or RCPT TO command.
+
+<ResponseField name="SIZE" type="string | undefined">
+  Declared message size in bytes.
+</ResponseField>
+
+<ResponseField name="BODY" type="string | undefined">
+  Body type: `"7BIT"` or `"8BITMIME"`.
+</ResponseField>
+
+<ResponseField name="SMTPUTF8" type="true | undefined">
+  UTF-8 support flag.
+</ResponseField>
+
+<ResponseField name="REQUIRETLS" type="true | undefined">
+  TLS-required flag (RFC 8689).
+</ResponseField>
+
+<ResponseField name="RET" type="string | undefined">
+  DSN return type (`"FULL"` or `"HDRS"`).
+</ResponseField>
+
+<ResponseField name="ENVID" type="string | undefined">
+  DSN envelope ID.
+</ResponseField>
+
+<ResponseField name="NOTIFY" type="string | undefined">
+  DSN notification conditions (comma-separated, e.g. `"SUCCESS,FAILURE"`).
+</ResponseField>
+
+<ResponseField name="ORCPT" type="string | undefined">
+  DSN original recipient address.
+</ResponseField>
+
+<ResponseField name="[key: string]" type="string | true | undefined">
+  Any unrecognized ESMTP parameter is also available as a string or `true`.
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({
+  onMailFrom(address, session, callback) {
+    console.log("Sender:", address.address);
+    
+    if (address.args) {
+      console.log("Declared size:", address.args.SIZE);
+      console.log("Body type:", address.args.BODY);
+      console.log("UTF-8:", address.args.SMTPUTF8);
+    }
+    
+    callback(null);
+  },
+});
+```
+
+---
+
+## DSNEnvelope
+
+DSN (Delivery Status Notification) parameters from the envelope.
+
+<ResponseField name="ret" type="'FULL' | 'HDRS' | null">
+  Return type requested by the client:
+  - `"FULL"`: Return full message in DSN
+  - `"HDRS"`: Return headers only
+  - `null`: No preference specified
+</ResponseField>
+
+<ResponseField name="envid" type="string | null">
+  Envelope identifier for tracking DSN reports.
+</ResponseField>
+
+---
+
+## DSNRcpt
+
+Per-recipient DSN parameters.
+
+<ResponseField name="notify" type="string[] | undefined">
+  DSN notification conditions (e.g. `["SUCCESS", "FAILURE", "DELAY"]`).
+</ResponseField>
+
+<ResponseField name="orcpt" type="string | undefined">
+  Original recipient address (for forwarding scenarios).
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({
+  onRcptTo(address, session, callback) {
+    console.log("Recipient:", address.address);
+    
+    if (address.dsn) {
+      console.log("Notify on:", address.dsn.notify);
+      console.log("Original:", address.dsn.orcpt);
+    }
+    
+    callback(null);
+  },
+});
+```
+
+---
+
+## DataStream
+
+A `ReadableStream<Uint8Array>` with extra metadata set after the stream closes.
+
+<ResponseField name="byteLength" type="number | undefined">
+  Total bytes received (available after stream closes).
+</ResponseField>
+
+<ResponseField name="sizeExceeded" type="boolean | undefined">
+  `true` if the message exceeded the configured `size` limit.
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({
+  size: 10 * 1024 * 1024, // 10 MB
+  onData(stream, session, callback) {
+    async function process() {
+      for await (const chunk of stream) {
+        // process chunks
+      }
+      
+      console.log("Received:", stream.byteLength, "bytes");
+      
+      if (stream.sizeExceeded) {
+        const err = new Error("Message too large");
+        err.responseCode = 552;
+        return callback(err);
+      }
+      
+      callback(null);
+    }
+    process().catch(callback);
+  },
+});
+```
+
+---
+
+## Complete Example
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  onConnect(session, callback) {
+    console.log(`New connection from ${session.remoteAddress}`);
+    callback(null);
+  },
+  
+  onAuth(auth, session, callback) {
+    callback(null, { user: { username: auth.username } });
+  },
+  
+  onData(stream, session, callback) {
+    const { envelope, user } = session;
+    
+    console.log("Connection ID:", session.id);
+    console.log("Secure:", session.secure);
+    console.log("TLS:", session.tlsOptions);
+    console.log("User:", user);
+    console.log("From:", envelope.mailFrom?.address);
+    console.log("To:", envelope.rcptTo.map(r => r.address));
+    console.log("UTF-8:", envelope.smtpUtf8);
+    console.log("Transaction #", session.transaction);
+    
+    stream.pipeTo(new WritableStream()).then(
+      () => {
+        console.log("Received:", stream.byteLength, "bytes");
+        callback(null);
+      },
+      callback
+    );
+  },
+  
+  onClose(session) {
+    console.log(`Connection ${session.id} closed`);
+  },
+});
+
+server.listen(2525);
+```

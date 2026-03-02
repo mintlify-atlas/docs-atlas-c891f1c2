@@ -1,0 +1,215 @@
+---
+title: Events
+description: Server events reference
+---
+
+`SMTPServer` is an event emitter. Use `server.on()`, `server.once()`, and `server.off()` to manage listeners.
+
+---
+
+## listening
+
+Emitted when the server has bound to a port and is ready to accept connections.
+
+```typescript
+server.on("listening", () => {
+  console.log("Server is ready");
+});
+
+await server.listen(2525);
+```
+
+<Info>
+The `listening` event fires after `server.listen()` successfully binds to the port.
+</Info>
+
+---
+
+## close
+
+Emitted when the server has fully shut down — all connections have closed and the port has been released.
+
+```typescript
+server.on("close", () => {
+  console.log("Server stopped");
+});
+
+server.close();
+```
+
+<Note>
+This event only fires after all active connections have finished or been forcibly terminated.
+</Note>
+
+---
+
+## error
+
+Emitted on server-level errors (e.g. port already in use, TLS failures). Always attach an error listener to prevent unhandled rejection crashes.
+
+```typescript
+server.on("error", (err) => {
+  console.error("SMTP server error:", err);
+  console.error("Response code:", err.responseCode);
+  console.error("Error code:", err.code);
+});
+```
+
+### Error Object
+
+The error object may include:
+
+<ResponseField name="message" type="string">
+  Error message.
+</ResponseField>
+
+<ResponseField name="responseCode" type="number | undefined">
+  SMTP status code (e.g. `421`, `451`, `550`).
+</ResponseField>
+
+<ResponseField name="code" type="string | undefined">
+  Error code string (e.g. `"EADDRINUSE"`, `"ECONNRESET"`).
+</ResponseField>
+
+<ResponseField name="meta" type="Record<string, unknown> | undefined">
+  Additional context about the error.
+</ResponseField>
+
+### Example
+
+```typescript
+const server = new SMTPServer({ /* ... */ });
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error("Port is already in use");
+  } else if (err.responseCode === 421) {
+    console.error("Service not available");
+  } else {
+    console.error("Unexpected error:", err);
+  }
+});
+
+server.listen(2525);
+```
+
+<Warning>
+Always attach an `error` event listener. Unhandled errors will crash your process.
+</Warning>
+
+---
+
+## connect
+
+Emitted when a new client connection is accepted (after `onConnect` succeeds).
+
+```typescript
+server.on("connect", (info) => {
+  console.log(`New connection from ${info.remoteAddress}:${info.remotePort}`);
+});
+```
+
+### ConnectionInfo
+
+<ResponseField name="id" type="string">
+  Unique connection identifier.
+</ResponseField>
+
+<ResponseField name="localAddress" type="string">
+  Server IP address.
+</ResponseField>
+
+<ResponseField name="localPort" type="number">
+  Server port.
+</ResponseField>
+
+<ResponseField name="remoteAddress" type="string">
+  Client IP address.
+</ResponseField>
+
+<ResponseField name="remotePort" type="number">
+  Client port.
+</ResponseField>
+
+<ResponseField name="clientHostname" type="string">
+  Reverse-DNS hostname of the client.
+</ResponseField>
+
+<ResponseField name="hostNameAppearsAs" type="string">
+  Hostname from HELO/EHLO (populated after the opening command).
+</ResponseField>
+
+### Example
+
+```typescript
+const connections = new Map();
+
+server.on("connect", (info) => {
+  connections.set(info.id, {
+    connectedAt: Date.now(),
+    remoteAddress: info.remoteAddress,
+  });
+  
+  console.log(`Active connections: ${connections.size}`);
+});
+
+server.on("close", (session) => {
+  connections.delete(session.id);
+});
+```
+
+---
+
+## Complete Example
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  authOptional: true,
+  onData(stream, session, callback) {
+    stream.pipeTo(new WritableStream()).then(
+      () => callback(null),
+      callback
+    );
+  },
+});
+
+// Listen for server lifecycle events
+server.on("listening", () => {
+  console.log("SMTP server is listening on port 2525");
+});
+
+server.on("connect", (info) => {
+  console.log(`[${info.id}] New connection from ${info.remoteAddress}`);
+});
+
+server.on("error", (err) => {
+  console.error("Server error:", err.message);
+  if (err.responseCode) {
+    console.error("SMTP code:", err.responseCode);
+  }
+});
+
+server.on("close", () => {
+  console.log("Server has shut down");
+});
+
+// Start the server
+server.listen(2525);
+
+// Graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("Received SIGTERM, shutting down gracefully...");
+  server.close(() => {
+    console.log("All connections closed");
+    process.exit(0);
+  });
+});
+```
+
+---
+
+## Event Method Reference
+
+See the [SMTPServer reference](/api/smtp-server#event-methods) for details on `on()`, `once()`, and `off()` methods.

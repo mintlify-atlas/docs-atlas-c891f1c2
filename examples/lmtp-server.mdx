@@ -1,0 +1,281 @@
+---
+title: LMTP server
+description: Build a Local Mail Transfer Protocol server with per-recipient responses
+---
+
+LMTP (Local Mail Transfer Protocol) is a variant of SMTP designed for local mail delivery. Unlike SMTP, LMTP returns a separate response for each recipient.
+
+## Complete example
+
+```typescript lmtp-server.ts
+import { SMTPServer } from "bun-smtp";
+import type { DataStream, SMTPSession, SMTPError } from "bun-smtp";
+
+const validRecipients = new Set([
+  "alice@localhost",
+  "bob@localhost",
+  "charlie@localhost",
+]);
+
+const server = new SMTPServer({
+  lmtp: true, // Enable LMTP mode
+  authOptional: true,
+  
+  onRcptTo(address, session, callback) {
+    // Validate each recipient (but don't reject yet)
+    if (!validRecipients.has(address.address)) {
+      console.log(`Unknown recipient: ${address.address}`);
+    }
+    
+    // Accept all recipients during RCPT TO phase
+    callback(null);
+  },
+  
+  onData(stream: DataStream, session: SMTPSession, callback) {
+    async function deliverToMailboxes() {
+      const chunks: Uint8Array[] = [];
+      
+      // Collect the message
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      
+      const message = Buffer.concat(chunks);
+      const responses: Array<string | SMTPError> = [];
+      
+      // Attempt delivery to each recipient
+      for (const recipient of session.envelope.rcptTo) {
+        const address = recipient.address;
+        
+        if (!validRecipients.has(address)) {
+          // Create an error for this specific recipient
+          const err = new Error(`No such user: ${address}`) as SMTPError;
+          err.responseCode = 550;
+          responses.push(err);
+          console.log(`✗ Delivery failed for ${address}`);
+        } else {
+          // Deliver to mailbox
+          try {
+            const maildir = `./mail/${address.replace("@", "-")}`;
+            await Bun.write(`${maildir}/${Date.now()}.eml`, message);
+            responses.push(`Delivered to ${address}`);
+            console.log(`✓ Delivered to ${address}`);
+          } catch (error) {
+            const err = new Error(`Mailbox error: ${error.message}`) as SMTPError;
+            err.responseCode = 452;
+            responses.push(err);
+            console.log(`✗ Mailbox error for ${address}`);
+          }
+        }
+      }
+      
+      // Return per-recipient responses
+      callback(null, responses);
+    }
+    
+    deliverToMailboxes().catch(callback);
+  },
+});
+
+await server.listen(2424);
+console.log("LMTP server listening on port 2424");
+```
+
+## How LMTP differs from SMTP
+
+<Steps>
+  <Step title="LHLO instead of EHLO">
+    Clients greet the server with `LHLO` instead of `EHLO` or `HELO`.
+  </Step>
+  
+  <Step title="Per-recipient responses">
+    After the DATA phase, the server sends one response line for each RCPT TO command, in the same order.
+  </Step>
+  
+  <Step title="No pipelining">
+    LMTP does not support command pipelining.
+  </Step>
+  
+  <Step title="Local delivery focus">
+    LMTP is designed for local mail delivery, not relaying between domains.
+  </Step>
+</Steps>
+
+## Per-recipient responses
+
+In LMTP mode, the `onData` callback's second argument can be an array:
+
+```typescript
+callback(null, [
+  "Delivered to alice@localhost",      // 250 Delivered to alice@localhost
+  createError(550, "No such user"),     // 550 No such user
+  "Delivered to charlie@localhost",    // 250 Delivered to charlie@localhost
+]);
+```
+
+Each element is either:
+- A **string** for success (generates a 250 response)
+- An **SMTPError** object with a `responseCode` property
+
+<Warning>
+  The array must have exactly one entry per recipient in `session.envelope.rcptTo`, in the same order.
+</Warning>
+
+## Creating error responses
+
+Helper function to create typed errors:
+
+```typescript
+function createError(code: number, message: string): SMTPError {
+  const err = new Error(message) as SMTPError;
+  err.responseCode = code;
+  return err;
+}
+
+// Usage in onData:
+const responses = session.envelope.rcptTo.map(recipient => {
+  if (isMailboxFull(recipient.address)) {
+    return createError(452, "Mailbox full");
+  }
+  if (!userExists(recipient.address)) {
+    return createError(550, "No such user");
+  }
+  return "Delivered successfully";
+});
+
+callback(null, responses);
+```
+
+## LMTP response codes
+
+Common LMTP response codes:
+
+| Code | Meaning | When to use |
+|------|---------|-------------|
+| 250 | Success | Recipient accepted, message delivered |
+| 450 | Temporary failure | Mailbox temporarily unavailable |
+| 451 | Server error | Local error, try again later |
+| 452 | Insufficient storage | Mailbox full or disk quota exceeded |
+| 550 | Permanent failure | No such user, mailbox doesn't exist |
+| 551 | User not local | Recipient not on this server |
+| 552 | Storage exceeded | Message too large for mailbox |
+
+## Example LMTP dialogue
+
+Here's what a complete LMTP session looks like:
+
+```
+C: LHLO client.example.com
+S: 250-server.example.com
+S: 250-SIZE 10485760
+S: 250 8BITMIME
+C: MAIL FROM:<sender@example.com>
+S: 250 OK
+C: RCPT TO:<alice@localhost>
+S: 250 OK
+C: RCPT TO:<nobody@localhost>
+S: 250 OK
+C: RCPT TO:<bob@localhost>
+S: 250 OK
+C: DATA
+S: 354 Start mail input; end with <CRLF>.<CRLF>
+C: Subject: Test
+C:
+C: Hello!
+C: .
+S: 250 Delivered to alice@localhost
+S: 550 No such user: nobody@localhost
+S: 250 Delivered to bob@localhost
+C: QUIT
+S: 221 Bye
+```
+
+Notice three separate responses after DATA, one per recipient.
+
+## Testing the LMTP server
+
+Create test mailboxes:
+
+```bash
+mkdir -p mail/alice-localhost mail/bob-localhost mail/charlie-localhost
+```
+
+Connect with telnet:
+
+```bash
+telnet localhost 2424
+```
+
+Send a message to multiple recipients:
+
+```
+LHLO localhost
+MAIL FROM:<sender@example.com>
+RCPT TO:<alice@localhost>
+RCPT TO:<nobody@localhost>
+RCPT TO:<bob@localhost>
+DATA
+Subject: LMTP Test
+
+This message has multiple recipients.
+.
+QUIT
+```
+
+You should see:
+```
+250 Delivered to alice@localhost
+550 No such user: nobody@localhost
+250 Delivered to bob@localhost
+```
+
+## Validating recipients early
+
+You can still reject recipients during the RCPT TO phase if you want to avoid partial delivery:
+
+```typescript
+onRcptTo(address, session, callback) {
+  if (!validRecipients.has(address.address)) {
+    const err = new Error(`No such user: ${address.address}`) as any;
+    err.responseCode = 550;
+    return callback(err);
+  }
+  callback(null);
+},
+```
+
+If you do this, the client will never send DATA for invalid recipients.
+
+<Info>
+  However, some LMTP use cases prefer to accept all recipients during RCPT TO and return per-recipient errors during DATA. This allows logging all attempted recipients.
+</Info>
+
+## Use cases for LMTP
+
+LMTP is commonly used for:
+
+- **Mail delivery agents (MDAs)**: Delivering mail to local mailboxes
+- **Mailing list servers**: Expanding a single message to multiple recipients
+- **Spam filters**: Per-recipient filtering decisions
+- **Local mail routing**: Between components in a mail system
+
+<Tip>
+  LMTP is typically used on Unix domain sockets or localhost, not exposed to the internet. For internet-facing servers, use SMTP.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Callbacks reference" icon="code" href="/api/callbacks">
+    Learn about onData and per-recipient responses
+  </Card>
+  <Card title="Configuration" icon="gear" href="/api/configuration">
+    Explore all LMTP configuration options
+  </Card>
+  <Card title="Basic server" icon="play" href="/examples/basic-server">
+    Start with a basic SMTP server
+  </Card>
+  <Card title="Session object" icon="database" href="/api/session">
+    Understand the session envelope
+  </Card>
+</CardGroup>

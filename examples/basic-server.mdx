@@ -1,0 +1,189 @@
+---
+title: Basic SMTP server
+description: Build a minimal SMTP server that accepts and stores emails
+---
+
+This example shows how to create a basic SMTP server that accepts emails without authentication and saves them to disk.
+
+## Complete example
+
+```typescript server.ts
+import { SMTPServer } from "bun-smtp";
+import type { DataStream, SMTPSession } from "bun-smtp";
+
+const server = new SMTPServer({
+  authOptional: true,
+  onData(stream: DataStream, session: SMTPSession, callback) {
+    async function saveEmail() {
+      const chunks: Uint8Array[] = [];
+      
+      // Collect all chunks from the stream
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      
+      // Combine chunks into a single buffer
+      const emailContent = Buffer.concat(chunks);
+      
+      // Save to disk with timestamp
+      const filename = `email-${Date.now()}.eml`;
+      await Bun.write(filename, emailContent);
+      
+      console.log(`Saved email to ${filename}`);
+      console.log(`From: ${session.envelope.mailFrom?.address}`);
+      console.log(`To: ${session.envelope.rcptTo.map(r => r.address).join(", ")}`);
+      
+      callback(null);
+    }
+    
+    saveEmail().catch(callback);
+  },
+});
+
+await server.listen(2525);
+console.log("SMTP server listening on port 2525");
+```
+
+## How it works
+
+<Steps>
+  <Step title="Configure the server">
+    Set `authOptional: true` to allow clients to send mail without authenticating.
+  </Step>
+  
+  <Step title="Handle incoming data">
+    The `onData` callback receives a `ReadableStream<Uint8Array>` containing the email message.
+  </Step>
+  
+  <Step title="Process the stream">
+    Use a `for await...of` loop to consume all chunks from the stream.
+  </Step>
+  
+  <Step title="Save the email">
+    Use `Bun.write()` to save the combined buffer to disk as a `.eml` file.
+  </Step>
+  
+  <Step title="Complete the transaction">
+    Call `callback(null)` to send a success response to the client.
+  </Step>
+</Steps>
+
+<Info>
+  You must fully consume the stream before calling the callback. Otherwise, the client will hang waiting for a response.
+</Info>
+
+## Testing the server
+
+Send a test email using the `mail` command or telnet:
+
+```bash
+telnet localhost 2525
+```
+
+Then type:
+
+```
+HELO localhost
+MAIL FROM:<sender@example.com>
+RCPT TO:<recipient@example.com>
+DATA
+Subject: Test Email
+
+This is a test message.
+.
+QUIT
+```
+
+## Accessing envelope information
+
+The `session.envelope` object contains metadata about the email:
+
+```typescript
+onData(stream, session, callback) {
+  console.log("Sender:", session.envelope.mailFrom?.address);
+  console.log("Recipients:", session.envelope.rcptTo.map(r => r.address));
+  console.log("Body type:", session.envelope.bodyType); // "7bit" or "8bitmime"
+  console.log("UTF8:", session.envelope.smtpUtf8);
+  console.log("Require TLS:", session.envelope.requireTLS);
+  
+  // ... process stream
+}
+```
+
+## Error handling
+
+Reject the email with a custom error code:
+
+```typescript
+onData(stream, session, callback) {
+  async function process() {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    
+    const content = Buffer.concat(chunks).toString();
+    
+    // Reject spam
+    if (content.includes("SPAM")) {
+      const err = new Error("Spam detected") as any;
+      err.responseCode = 550;
+      return callback(err);
+    }
+    
+    callback(null);
+  }
+  
+  process().catch(callback);
+}
+```
+
+<Warning>
+  Always consume the entire stream even if you plan to reject the message. Otherwise, the connection may hang.
+</Warning>
+
+## Size limits
+
+Set a maximum message size:
+
+```typescript
+const server = new SMTPServer({
+  authOptional: true,
+  size: 10 * 1024 * 1024, // 10 MB limit
+  onData(stream, session, callback) {
+    async function process() {
+      for await (const chunk of stream) {
+        // drain
+      }
+      
+      if (stream.sizeExceeded) {
+        const err = new Error("Message too large") as any;
+        err.responseCode = 552;
+        return callback(err);
+      }
+      
+      console.log(`Received ${stream.byteLength} bytes`);
+      callback(null);
+    }
+    
+    process().catch(callback);
+  },
+});
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Add authentication" icon="lock" href="/examples/auth-server">
+    Require users to authenticate before sending
+  </Card>
+  <Card title="Enable TLS" icon="shield" href="/examples/tls-server">
+    Encrypt connections with STARTTLS
+  </Card>
+  <Card title="Configuration reference" icon="gear" href="/api/configuration">
+    Explore all server options
+  </Card>
+  <Card title="Callbacks reference" icon="code" href="/api/callbacks">
+    Learn about all lifecycle callbacks
+  </Card>
+</CardGroup>

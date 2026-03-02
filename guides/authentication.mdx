@@ -1,0 +1,298 @@
+---
+title: Authentication
+description: Configure SASL authentication methods for your SMTP server
+---
+
+## Overview
+
+bun-smtp supports four SASL authentication methods: PLAIN, LOGIN, CRAM-MD5, and XOAUTH2. You can control which methods are available and enforce authentication requirements through configuration options.
+
+## Configuration Options
+
+Control authentication behavior with these options:
+
+```typescript
+const server = new SMTPServer({
+  authMethods: ["PLAIN", "LOGIN", "CRAM-MD5", "XOAUTH2"],
+  allowInsecureAuth: false, // require TLS before AUTH (default)
+  authOptional: false,      // require AUTH (default)
+});
+```
+
+<Info>
+By default, `allowInsecureAuth` is `false`, meaning clients must complete STARTTLS before authenticating. This prevents credentials from being transmitted over unencrypted connections.
+</Info>
+
+### Options Reference
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `authMethods` | `string[]` | `["PLAIN", "LOGIN"]` | Allowed SASL methods |
+| `authOptional` | `boolean` | `false` | Allow unauthenticated sessions |
+| `allowInsecureAuth` | `boolean` | `false` | Allow AUTH over plain TCP (no TLS) |
+| `authRequiredMessage` | `string` | — | Custom message for 530 response |
+
+## The onAuth Callback
+
+The `onAuth` callback is invoked for every authentication attempt. Call `callback(null, { user })` to accept or `callback(new Error("reason"))` to reject.
+
+<Warning>
+The `onAuth` callback is required if `authOptional` is `false`. Without it, all authentication attempts will fail with a 535 error.
+</Warning>
+
+## PLAIN and LOGIN
+
+Both PLAIN and LOGIN methods deliver credentials in the same format. The only difference is the wire protocol — both provide `username` and `password` fields.
+
+<Steps>
+  <Step title="Configure the server">
+    Enable PLAIN and LOGIN in your server configuration:
+    
+    ```typescript
+    const server = new SMTPServer({
+      authMethods: ["PLAIN", "LOGIN"],
+      onAuth(auth, session, callback) {
+        // Handle authentication
+      },
+    });
+    ```
+  </Step>
+  
+  <Step title="Implement the onAuth handler">
+    Check the credentials and call the callback:
+    
+    ```typescript
+    onAuth(auth, session, callback) {
+      if (auth.method !== "PLAIN" && auth.method !== "LOGIN") {
+        return callback(new Error("Unsupported method"));
+      }
+      
+      if (auth.username === "user" && auth.password === "secret") {
+        callback(null, { user: auth.username });
+      } else {
+        callback(new Error("Invalid credentials"));
+      }
+    }
+    ```
+  </Step>
+  
+  <Step title="Handle the user object">
+    The `user` object you pass is available on `session.user` for all subsequent callbacks:
+    
+    ```typescript
+    onData(stream, session, callback) {
+      console.log(session.user); // "user"
+    }
+    ```
+  </Step>
+</Steps>
+
+### Auth Object Fields (PLAIN/LOGIN)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | `"PLAIN" \| "LOGIN"` | Which method the client used |
+| `username` | `string` | Decoded username |
+| `password` | `string` | Decoded password |
+
+## CRAM-MD5
+
+CRAM-MD5 provides challenge-response authentication without transmitting the password. The server sends a challenge, and the client responds with an HMAC-MD5 digest.
+
+<Note>
+CRAM-MD5 requires you to have access to the plaintext password (or a reversibly encrypted version) to verify the response. If you only store password hashes, CRAM-MD5 won't work.
+</Note>
+
+```typescript
+const server = new SMTPServer({
+  authMethods: ["CRAM-MD5"],
+  onAuth(auth, session, callback) {
+    if (auth.method !== "CRAM-MD5") {
+      return callback(new Error("Unsupported method"));
+    }
+    
+    // Look up the stored password for this user
+    const storedPassword = lookupPassword(auth.username);
+    
+    if (auth.validatePassword(storedPassword)) {
+      callback(null, { user: auth.username });
+    } else {
+      callback(new Error("Invalid credentials"));
+    }
+  },
+});
+```
+
+### Auth Object Fields (CRAM-MD5)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | `"CRAM-MD5"` | Authentication method |
+| `username` | `string` | Client username |
+| `challenge` | `string` | Server-generated challenge string |
+| `challengeResponse` | `string` | Raw response from the client |
+| `validatePassword(password)` | `(string) => boolean` | Returns `true` if the password matches |
+
+<Accordion title="How CRAM-MD5 validation works">
+  The `validatePassword()` method computes HMAC-MD5 of the challenge using the provided password and compares it to the client's response:
+  
+  ```typescript src/auth.ts
+  validatePassword(password: string): boolean {
+    const hasher = new CryptoHasher("md5", password);
+    return (
+      hasher.update(challenge).digest("hex").toLowerCase() ===
+      challengeResponse
+    );
+  }
+  ```
+</Accordion>
+
+## XOAUTH2
+
+XOAUTH2 is used for OAuth2 bearer token authentication, commonly used with services like Gmail and Office 365.
+
+```typescript
+const server = new SMTPServer({
+  authMethods: ["XOAUTH2"],
+  onAuth(auth, session, callback) {
+    if (auth.method !== "XOAUTH2") {
+      return callback(new Error("Unsupported method"));
+    }
+    
+    verifyToken(auth.username, auth.accessToken)
+      .then((user) => callback(null, { user }))
+      .catch(() => {
+        // Return data to trigger the XOAUTH2 re-challenge
+        callback(new Error("Invalid token"), {
+          data: { status: "401", schemes: "bearer", scope: "mail" },
+        });
+      });
+  },
+});
+```
+
+### Auth Object Fields (XOAUTH2)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | `"XOAUTH2"` | Authentication method |
+| `username` | `string` | User email address |
+| `accessToken` | `string` | OAuth2 bearer token |
+
+<Tip>
+When authentication fails, you can pass a `data` object in the response to trigger an XOAUTH2 error challenge. This allows the client to understand why authentication failed and potentially retry with a refreshed token.
+</Tip>
+
+## Storing the Authenticated User
+
+Whatever you pass as `user` in the success response is stored on `session.user` for the rest of the connection. You can pass any value — a string, number, or object:
+
+<Tabs>
+  <Tab title="String">
+    ```typescript
+    callback(null, { user: "user@example.com" });
+    
+    // Later in onData:
+    onData(stream, session, callback) {
+      console.log(session.user); // "user@example.com"
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Object">
+    ```typescript
+    callback(null, { user: { id: 42, email: "user@example.com" } });
+    
+    // Later in onData:
+    onData(stream, session, callback) {
+      console.log(session.user); // { id: 42, email: 'user@example.com' }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Custom Error Messages
+
+You can customize error responses by setting `responseCode` on the error object:
+
+```typescript
+onAuth(auth, session, callback) {
+  const error = new Error("Account suspended");
+  error.responseCode = 554;
+  callback(error);
+}
+```
+
+## Security Best Practices
+
+<Steps>
+  <Step title="Require TLS">
+    Always keep `allowInsecureAuth: false` in production to prevent credential theft.
+  </Step>
+  
+  <Step title="Rate limit authentication attempts">
+    Track failed attempts per IP address and implement exponential backoff:
+    
+    ```typescript
+    const failedAttempts = new Map<string, number>();
+    
+    onAuth(auth, session, callback) {
+      const ip = session.remoteAddress;
+      const attempts = failedAttempts.get(ip) || 0;
+      
+      if (attempts > 5) {
+        return callback(new Error("Too many failed attempts"));
+      }
+      
+      // Verify credentials...
+      if (!valid) {
+        failedAttempts.set(ip, attempts + 1);
+        return callback(new Error("Invalid credentials"));
+      }
+      
+      failedAttempts.delete(ip);
+      callback(null, { user: auth.username });
+    }
+    ```
+  </Step>
+  
+  <Step title="Use secure password storage">
+    Never store plaintext passwords. Use bcrypt, scrypt, or Argon2 for password hashing.
+  </Step>
+</Steps>
+
+## Multiple Authentication Methods
+
+You can support multiple methods simultaneously. Use the `auth.method` field to determine which method the client used:
+
+```typescript
+const server = new SMTPServer({
+  authMethods: ["PLAIN", "LOGIN", "CRAM-MD5"],
+  onAuth(auth, session, callback) {
+    switch (auth.method) {
+      case "PLAIN":
+      case "LOGIN":
+        // Handle password-based auth
+        if (verifyPassword(auth.username, auth.password)) {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error("Invalid credentials"));
+        }
+        break;
+        
+      case "CRAM-MD5":
+        // Handle challenge-response
+        const storedPassword = getPassword(auth.username);
+        if (auth.validatePassword(storedPassword)) {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error("Invalid credentials"));
+        }
+        break;
+        
+      default:
+        callback(new Error("Unsupported method"));
+    }
+  },
+});
+```

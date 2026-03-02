@@ -1,0 +1,286 @@
+---
+title: Authenticated SMTP server
+description: Require authentication before accepting mail
+---
+
+This example demonstrates how to build an SMTP server that requires authentication using PLAIN or LOGIN methods.
+
+## Complete example
+
+```typescript auth-server.ts
+import { SMTPServer } from "bun-smtp";
+import type { AuthObject, SMTPSession, AuthResponse } from "bun-smtp";
+
+// In production, use a proper database
+const users = new Map([
+  ["alice", "secret123"],
+  ["bob", "password456"],
+]);
+
+const server = new SMTPServer({
+  authMethods: ["PLAIN", "LOGIN"],
+  authOptional: false, // Require authentication
+  allowInsecureAuth: false, // Require TLS before AUTH
+  
+  onAuth(auth: AuthObject, session: SMTPSession, callback) {
+    console.log(`Auth attempt: ${auth.method} from ${session.remoteAddress}`);
+    
+    if (auth.method === "PLAIN" || auth.method === "LOGIN") {
+      const storedPassword = users.get(auth.username);
+      
+      if (storedPassword && auth.password === storedPassword) {
+        console.log(`✓ User ${auth.username} authenticated`);
+        callback(null, { 
+          user: { username: auth.username, ip: session.remoteAddress } 
+        });
+      } else {
+        console.log(`✗ Invalid credentials for ${auth.username}`);
+        const err = new Error("Invalid username or password") as any;
+        err.responseCode = 535;
+        callback(err);
+      }
+    } else {
+      const err = new Error("Unsupported authentication method") as any;
+      err.responseCode = 504;
+      callback(err);
+    }
+  },
+  
+  onData(stream, session, callback) {
+    async function saveEmail() {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      
+      const filename = `${session.user.username}-${Date.now()}.eml`;
+      await Bun.write(filename, Buffer.concat(chunks));
+      
+      console.log(`Saved email from ${session.user.username} to ${filename}`);
+      callback(null);
+    }
+    
+    saveEmail().catch(callback);
+  },
+});
+
+await server.listen(587);
+console.log("Authenticated SMTP server listening on port 587");
+```
+
+## Authentication flow
+
+<Steps>
+  <Step title="Client connects">
+    The server sends a `220` greeting and advertises PLAIN and LOGIN in the EHLO response.
+  </Step>
+  
+  <Step title="Client attempts TLS">
+    Since `allowInsecureAuth: false`, the client must use STARTTLS before AUTH is allowed.
+  </Step>
+  
+  <Step title="Client authenticates">
+    The client sends `AUTH PLAIN` or `AUTH LOGIN` with credentials.
+  </Step>
+  
+  <Step title="Server validates">
+    The `onAuth` callback checks credentials and accepts or rejects.
+  </Step>
+  
+  <Step title="Session continues">
+    If authentication succeeds, `session.user` is set and the client can send mail.
+  </Step>
+</Steps>
+
+## Using the authenticated user
+
+The `user` object you return in `onAuth` is available throughout the session:
+
+```typescript
+onAuth(auth, session, callback) {
+  callback(null, { 
+    user: { 
+      id: 42, 
+      username: auth.username,
+      email: `${auth.username}@example.com`,
+      roles: ["sender"]
+    } 
+  });
+}
+
+// Later in other callbacks:
+onMailFrom(address, session, callback) {
+  console.log(`User ${session.user.username} sending from ${address.address}`);
+  
+  // Enforce sender restrictions
+  if (address.address !== session.user.email) {
+    return callback(new Error("You can only send from your own address"));
+  }
+  
+  callback(null);
+}
+
+onData(stream, session, callback) {
+  console.log(`Receiving mail from user ID ${session.user.id}`);
+  // ... process stream
+}
+```
+
+## Supporting multiple auth methods
+
+<Tabs>
+  <Tab title="PLAIN / LOGIN">
+    ```typescript
+    onAuth(auth, session, callback) {
+      if (auth.method === "PLAIN" || auth.method === "LOGIN") {
+        const valid = validateCredentials(auth.username, auth.password);
+        if (valid) {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error("Invalid credentials"));
+        }
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="CRAM-MD5">
+    ```typescript
+    authMethods: ["CRAM-MD5"],
+    onAuth(auth, session, callback) {
+      if (auth.method === "CRAM-MD5") {
+        const storedPassword = getPassword(auth.username);
+        if (auth.validatePassword(storedPassword)) {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error("Invalid credentials"));
+        }
+      }
+    }
+    ```
+  </Tab>
+  
+  <Tab title="XOAUTH2">
+    ```typescript
+    authMethods: ["XOAUTH2"],
+    onAuth(auth, session, callback) {
+      if (auth.method === "XOAUTH2") {
+        verifyOAuthToken(auth.username, auth.accessToken)
+          .then(user => callback(null, { user }))
+          .catch(() => {
+            callback(new Error("Invalid token"), {
+              data: { status: "401", schemes: "bearer" }
+            });
+          });
+      }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+<Info>
+  See the [Authentication guide](/guides/authentication) for complete details on each auth method.
+</Info>
+
+## Rate limiting
+
+Limit authentication attempts per IP:
+
+```typescript
+const attempts = new Map<string, number>();
+
+const server = new SMTPServer({
+  onConnect(session, callback) {
+    const ip = session.remoteAddress;
+    const count = attempts.get(ip) || 0;
+    
+    if (count > 10) {
+      const err = new Error("Too many failed attempts") as any;
+      err.responseCode = 421;
+      return callback(err);
+    }
+    
+    callback(null);
+  },
+  
+  onAuth(auth, session, callback) {
+    const ip = session.remoteAddress;
+    
+    if (validateCredentials(auth.username, auth.password)) {
+      attempts.delete(ip); // Reset on success
+      callback(null, { user: auth.username });
+    } else {
+      attempts.set(ip, (attempts.get(ip) || 0) + 1);
+      callback(new Error("Invalid credentials"));
+    }
+  },
+});
+```
+
+## Testing authentication
+
+Test with `openssl` to see the SMTP dialogue:
+
+```bash
+openssl s_client -starttls smtp -connect localhost:587
+```
+
+Then:
+
+```
+EHLO localhost
+AUTH PLAIN
+# Paste base64-encoded: \0username\0password
+MAIL FROM:<alice@example.com>
+RCPT TO:<bob@example.com>
+DATA
+Subject: Test
+
+Hello!
+.
+QUIT
+```
+
+Generate the PLAIN auth string:
+
+```bash
+echo -ne '\0alice\0secret123' | base64
+```
+
+<Tip>
+  Use Bun's built-in `btoa()` and `atob()` functions to encode/decode base64 in your code.
+</Tip>
+
+## Require TLS for authentication
+
+The server rejects AUTH attempts over plain TCP when `allowInsecureAuth: false`:
+
+```typescript
+const server = new SMTPServer({
+  allowInsecureAuth: false, // default
+  onAuth(auth, session, callback) {
+    // This callback is only called after STARTTLS completes
+    console.log("Secure:", session.secure); // true
+    // ... validate credentials
+  },
+});
+```
+
+Clients must use STARTTLS before sending AUTH commands.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="TLS configuration" icon="shield" href="/examples/tls-server">
+    Add STARTTLS and implicit TLS support
+  </Card>
+  <Card title="Authentication guide" icon="book" href="/guides/authentication">
+    Learn about CRAM-MD5 and XOAUTH2
+  </Card>
+  <Card title="Callbacks reference" icon="code" href="/api/callbacks">
+    Explore all lifecycle callbacks
+  </Card>
+  <Card title="Session object" icon="database" href="/api/session">
+    Learn about the session object
+  </Card>
+</CardGroup>

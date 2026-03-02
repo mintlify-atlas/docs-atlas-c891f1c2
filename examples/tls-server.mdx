@@ -1,0 +1,306 @@
+---
+title: TLS and STARTTLS
+description: Encrypt SMTP connections with TLS
+---
+
+This example shows how to configure TLS for your SMTP server, supporting both STARTTLS (opportunistic TLS) and implicit TLS.
+
+## STARTTLS (port 587)
+
+STARTTLS allows clients to upgrade a plain TCP connection to TLS:
+
+```typescript starttls-server.ts
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  // TLS credentials
+  key: await Bun.file("./cert/key.pem").text(),
+  cert: await Bun.file("./cert/cert.pem").text(),
+  
+  // Allow plain connections but require upgrade before AUTH
+  secure: false,
+  needsUpgrade: true,
+  allowInsecureAuth: false,
+  
+  onAuth(auth, session, callback) {
+    // session.secure is true here (STARTTLS completed)
+    if (auth.username === "user" && auth.password === "pass") {
+      callback(null, { user: auth.username });
+    } else {
+      callback(new Error("Invalid credentials"));
+    }
+  },
+  
+  onData(stream, session, callback) {
+    stream.pipeTo(new WritableStream()).then(
+      () => callback(null),
+      callback
+    );
+  },
+});
+
+await server.listen(587);
+console.log("STARTTLS server listening on port 587");
+```
+
+<Info>
+  `needsUpgrade: true` means the server will reject AUTH and MAIL commands until the client runs STARTTLS.
+</Info>
+
+## Implicit TLS (port 465)
+
+Implicit TLS starts encryption immediately upon connection:
+
+```typescript implicit-tls-server.ts
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  // TLS credentials
+  key: await Bun.file("./cert/key.pem").text(),
+  cert: await Bun.file("./cert/cert.pem").text(),
+  
+  // Start in secure mode
+  secure: true,
+  
+  onAuth(auth, session, callback) {
+    if (auth.username === "user" && auth.password === "pass") {
+      callback(null, { user: auth.username });
+    } else {
+      callback(new Error("Invalid credentials"));
+    }
+  },
+  
+  onData(stream, session, callback) {
+    stream.pipeTo(new WritableStream()).then(
+      () => callback(null),
+      callback
+    );
+  },
+});
+
+await server.listen(465);
+console.log("Implicit TLS server listening on port 465");
+```
+
+## Generating self-signed certificates
+
+For development, generate a self-signed certificate:
+
+```bash
+mkdir -p cert
+openssl req -x509 -newkey rsa:4096 -keyout cert/key.pem -out cert/cert.pem \
+  -days 365 -nodes -subj "/CN=localhost"
+```
+
+<Warning>
+  Never use self-signed certificates in production. Use certificates from a trusted CA like Let's Encrypt.
+</Warning>
+
+## Using Let's Encrypt certificates
+
+Load production certificates from disk:
+
+```typescript
+const server = new SMTPServer({
+  key: await Bun.file("/etc/letsencrypt/live/mail.example.com/privkey.pem").text(),
+  cert: await Bun.file("/etc/letsencrypt/live/mail.example.com/fullchain.pem").text(),
+  secure: true,
+});
+```
+
+## Hot-reloading certificates
+
+Rotate certificates without restarting:
+
+```typescript
+const server = new SMTPServer({
+  key: await Bun.file("./cert/key.pem").text(),
+  cert: await Bun.file("./cert/cert.pem").text(),
+  secure: true,
+});
+
+await server.listen(465);
+
+// Watch for certificate updates
+setInterval(async () => {
+  const newKey = await Bun.file("./cert/key.pem").text();
+  const newCert = await Bun.file("./cert/cert.pem").text();
+  
+  server.updateSecureContext({ key: newKey, cert: newCert });
+  console.log("TLS certificates reloaded");
+}, 60_000); // Check every minute
+```
+
+<Tip>
+  New connections will use the updated certificates immediately. Existing connections continue with the old certificate until they close.
+</Tip>
+
+## Inspecting the TLS connection
+
+Use the `onSecure` callback to inspect TLS details:
+
+```typescript
+const server = new SMTPServer({
+  key: await Bun.file("./cert/key.pem").text(),
+  cert: await Bun.file("./cert/cert.pem").text(),
+  secure: true,
+  
+  onSecure(socket, session, callback) {
+    console.log("TLS handshake completed");
+    console.log("Cipher:", session.tlsOptions?.name);
+    console.log("Protocol:", session.tlsOptions?.version);
+    console.log("SNI servername:", session.servername);
+    callback(null);
+  },
+});
+```
+
+## Client certificate validation
+
+Require clients to present a valid certificate:
+
+```typescript
+const server = new SMTPServer({
+  key: await Bun.file("./cert/key.pem").text(),
+  cert: await Bun.file("./cert/cert.pem").text(),
+  ca: await Bun.file("./cert/ca.pem").text(),
+  
+  requestCert: true,
+  rejectUnauthorized: true,
+  
+  secure: true,
+  
+  onSecure(socket, session, callback) {
+    // Client cert was validated by Bun's TLS layer
+    console.log("Client authenticated via certificate");
+    callback(null);
+  },
+});
+```
+
+## SNI (Server Name Indication)
+
+Serve different certificates for different domains:
+
+```typescript
+const server = new SMTPServer({
+  // Default certificate
+  key: await Bun.file("./cert/default-key.pem").text(),
+  cert: await Bun.file("./cert/default-cert.pem").text(),
+  
+  // Per-domain certificates
+  sniOptions: {
+    "mail.example.com": {
+      key: await Bun.file("./cert/example-key.pem").text(),
+      cert: await Bun.file("./cert/example-cert.pem").text(),
+    },
+    "smtp.another.com": {
+      key: await Bun.file("./cert/another-key.pem").text(),
+      cert: await Bun.file("./cert/another-cert.pem").text(),
+    },
+  },
+  
+  secure: true,
+  
+  onSecure(socket, session, callback) {
+    console.log(`Connected via SNI: ${session.servername}`);
+    callback(null);
+  },
+});
+```
+
+## TLS options reference
+
+<ParamField path="key" type="string | Buffer" required>
+  Private key in PEM format
+</ParamField>
+
+<ParamField path="cert" type="string | Buffer" required>
+  Certificate in PEM format
+</ParamField>
+
+<ParamField path="ca" type="string | Buffer | Array<string | Buffer>">
+  Certificate authority bundle for client cert verification
+</ParamField>
+
+<ParamField path="secure" type="boolean" default="false">
+  Start in implicit TLS mode (true) or allow STARTTLS (false)
+</ParamField>
+
+<ParamField path="needsUpgrade" type="boolean" default="false">
+  Require STARTTLS before AUTH and MAIL commands
+</ParamField>
+
+<ParamField path="requestCert" type="boolean" default="false">
+  Request a client certificate during TLS handshake
+</ParamField>
+
+<ParamField path="rejectUnauthorized" type="boolean" default="false">
+  Reject clients with invalid or unverifiable certificates
+</ParamField>
+
+<ParamField path="minVersion" type="string">
+  Minimum TLS version (e.g., `"TLSv1.2"`)
+</ParamField>
+
+<ParamField path="maxVersion" type="string">
+  Maximum TLS version (e.g., `"TLSv1.3"`)
+</ParamField>
+
+<ParamField path="sniOptions" type="Record<string, TLSOptions>">
+  Per-hostname TLS configuration for SNI
+</ParamField>
+
+## Testing TLS connections
+
+<Tabs>
+  <Tab title="STARTTLS">
+    ```bash
+    openssl s_client -starttls smtp -connect localhost:587
+    ```
+    
+    You'll see:
+    ```
+    220 hostname ESMTP
+    EHLO localhost
+    250-hostname
+    250-STARTTLS
+    250 AUTH PLAIN LOGIN
+    STARTTLS
+    250 Ready to start TLS
+    # TLS handshake begins
+    ```
+  </Tab>
+  
+  <Tab title="Implicit TLS">
+    ```bash
+    openssl s_client -connect localhost:465
+    ```
+    
+    TLS handshake starts immediately:
+    ```
+    # TLS handshake
+    220 hostname ESMTP
+    EHLO localhost
+    250-hostname
+    250 AUTH PLAIN LOGIN
+    ```
+  </Tab>
+</Tabs>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="TLS guide" icon="book" href="/guides/tls">
+    Learn more about TLS configuration
+  </Card>
+  <Card title="Authentication" icon="lock" href="/examples/auth-server">
+    Add authentication to your server
+  </Card>
+  <Card title="Configuration reference" icon="gear" href="/api/configuration">
+    Explore all TLS options
+  </Card>
+  <Card title="Callbacks reference" icon="code" href="/api/callbacks">
+    Learn about onSecure callback
+  </Card>
+</CardGroup>

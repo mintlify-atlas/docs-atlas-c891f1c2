@@ -1,0 +1,452 @@
+---
+title: Migrating from smtp-server
+description: Switch from smtp-server to bun-smtp with minimal code changes
+---
+
+## Overview
+
+bun-smtp is designed as a drop-in replacement for the [smtp-server](https://www.npmjs.com/package/smtp-server) npm package. Most servers can migrate by simply changing the import and updating the `onData` callback to work with Web Streams.
+
+<Note>
+bun-smtp maintains API compatibility with smtp-server to make migration seamless. All constructor options, callback signatures, and session properties remain the same.
+</Note>
+
+## Installation
+
+<CodeGroup>
+```bash npm (before)
+npm install smtp-server
+```
+
+```bash Bun (after)
+bun add bun-smtp
+```
+</CodeGroup>
+
+## Import Statement
+
+<CodeGroup>
+```javascript smtp-server
+const { SMTPServer } = require('smtp-server');
+// or
+import { SMTPServer } from 'smtp-server';
+```
+
+```typescript bun-smtp
+import { SMTPServer } from 'bun-smtp';
+```
+</CodeGroup>
+
+## Key Differences
+
+### 1. onData Stream Type
+
+This is the **primary change** required when migrating. smtp-server passes a Node.js `Readable` stream, while bun-smtp passes a Web `ReadableStream<Uint8Array>`.
+
+<Tabs>
+  <Tab title="Before (smtp-server)">
+    ```typescript
+    onData(stream, session, callback) {
+      const chunks = [];
+      stream.on("data", (chunk) => chunks.push(chunk));
+      stream.on("end", () => {
+        const body = Buffer.concat(chunks);
+        console.log("Received message:", body.length, "bytes");
+        callback(null);
+      });
+      stream.on("error", callback);
+    }
+    ```
+  </Tab>
+  
+  <Tab title="After (bun-smtp)">
+    ```typescript
+    onData(stream, session, callback) {
+      async function process() {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of stream) {
+          chunks.push(chunk);
+        }
+        const body = Buffer.concat(chunks);
+        console.log("Received message:", body.length, "bytes");
+        callback(null);
+      }
+      process().catch(callback);
+    }
+    ```
+  </Tab>
+</Tabs>
+
+#### Discarding the Stream
+
+To discard the message body without reading it:
+
+<CodeGroup>
+```typescript smtp-server
+onData(stream, session, callback) {
+  stream.resume();
+  stream.on("end", () => callback(null));
+  stream.on("error", callback);
+}
+```
+
+```typescript bun-smtp
+onData(stream, session, callback) {
+  stream.pipeTo(new WritableStream()).then(() => callback(null), callback);
+}
+```
+</CodeGroup>
+
+#### Stream Properties
+
+Both implementations provide `byteLength` and `sizeExceeded` properties:
+
+<Info>
+- `stream.byteLength` is set after the stream closes
+- `stream.sizeExceeded` becomes `true` when the message exceeds `options.size`
+</Info>
+
+```typescript
+onData(stream, session, callback) {
+  async function process() {
+    for await (const chunk of stream) {
+      // Check if size limit exceeded during iteration
+      if (stream.sizeExceeded) {
+        callback(new Error("Message too large"));
+        return;
+      }
+    }
+    // byteLength is available after the stream completes
+    console.log("Total bytes:", stream.byteLength);
+    callback(null);
+  }
+  process().catch(callback);
+}
+```
+
+### 2. Logger Option Removed
+
+smtp-server accepts a `logger` option (bunyan-compatible). bun-smtp does not support this option.
+
+<CodeGroup>
+```typescript smtp-server
+const server = new SMTPServer({
+  logger: bunyanLogger,
+});
+```
+
+```typescript bun-smtp
+// Remove logger option
+const server = new SMTPServer({
+  // Add logging directly in callbacks if needed
+  onConnect(session, callback) {
+    console.log("Connection from", session.remoteAddress);
+    callback();
+  },
+  onClose(session) {
+    console.log("Connection closed", session.id);
+  },
+});
+```
+</CodeGroup>
+
+### 3. onSecure Socket Type
+
+The `socket` argument in `onSecure` is a Bun `Socket`, not a Node.js `tls.TLSSocket`. TLS details are available on `session.tlsOptions`.
+
+<CodeGroup>
+```typescript smtp-server
+onSecure(socket, session, callback) {
+  console.log("Cipher:", socket.getCipher());
+  console.log("Protocol:", socket.getProtocol());
+  callback();
+}
+```
+
+```typescript bun-smtp
+onSecure(socket, session, callback) {
+  console.log("Cipher:", session.tlsOptions?.name);
+  console.log("Protocol:", session.tlsOptions?.version);
+  callback();
+}
+```
+</CodeGroup>
+
+## What Stays the Same
+
+Everything else is a direct drop-in replacement:
+
+<Steps>
+  <Step title="Constructor Options">
+    All options have the same names, types, and default values:
+    
+    ```typescript
+    const server = new SMTPServer({
+      secure: true,
+      key: readFileSync("server.key"),
+      cert: readFileSync("server.crt"),
+      authMethods: ["PLAIN", "LOGIN"],
+      authOptional: false,
+      size: 10 * 1024 * 1024,
+      // ... all other options work identically
+    });
+    ```
+  </Step>
+  
+  <Step title="Callbacks">
+    All callback signatures remain unchanged:
+    
+    - `onConnect(session, callback)`
+    - `onAuth(auth, session, callback)`
+    - `onMailFrom(address, session, callback)`
+    - `onRcptTo(address, session, callback)`
+    - `onData(stream, session, callback)` — only the stream type changes
+    - `onClose(session)`
+  </Step>
+  
+  <Step title="Auth Objects">
+    Auth object shapes for all methods are identical:
+    
+    - PLAIN/LOGIN: `{ method, username, password }`
+    - CRAM-MD5: `{ method, username, challenge, challengeResponse, validatePassword() }`
+    - XOAUTH2: `{ method, username, accessToken }`
+  </Step>
+  
+  <Step title="Session & Envelope">
+    `SMTPSession` and `SMTPEnvelope` structures are identical:
+    
+    ```typescript
+    onData(stream, session, callback) {
+      console.log("From:", session.envelope.mailFrom?.address);
+      console.log("To:", session.envelope.rcptTo.map(r => r.address));
+      console.log("Secure:", session.secure);
+      console.log("User:", session.user);
+    }
+    ```
+  </Step>
+  
+  <Step title="Error Handling">
+    Custom SMTP error codes work the same way:
+    
+    ```typescript
+    const error = new Error("Mailbox full");
+    error.responseCode = 552;
+    callback(error);
+    ```
+  </Step>
+  
+  <Step title="TLS Options">
+    All TLS options are identical:
+    
+    - `key`, `cert`, `ca`
+    - `sniOptions`
+    - `requestCert`, `rejectUnauthorized`
+    - `minVersion`, `maxVersion`
+  </Step>
+  
+  <Step title="Server Methods">
+    - `server.listen(port, callback)`
+    - `server.close(callback)`
+    - `server.updateSecureContext(options)`
+    - Events: `"listening"`, `"close"`, `"error"`, `"connect"`
+  </Step>
+</Steps>
+
+## Migration Checklist
+
+<Steps>
+  <Step title="Update dependencies">
+    ```bash
+    bun remove smtp-server
+    bun add bun-smtp
+    ```
+  </Step>
+  
+  <Step title="Update imports">
+    ```typescript
+    // Change this:
+    import { SMTPServer } from 'smtp-server';
+    
+    // To this:
+    import { SMTPServer } from 'bun-smtp';
+    ```
+  </Step>
+  
+  <Step title="Update onData callback">
+    Convert Node.js stream handlers to Web Streams:
+    
+    ```typescript
+    // Before:
+    stream.on("data", handler);
+    stream.on("end", handler);
+    stream.on("error", handler);
+    
+    // After:
+    for await (const chunk of stream) { /* ... */ }
+    ```
+  </Step>
+  
+  <Step title="Remove logger option">
+    If you're using the `logger` option, remove it and add logging to individual callbacks.
+  </Step>
+  
+  <Step title="Update onSecure if used">
+    If you're using `onSecure`, update TLS property access:
+    
+    ```typescript
+    // Before: socket.getCipher()
+    // After: session.tlsOptions?.name
+    ```
+  </Step>
+  
+  <Step title="Test thoroughly">
+    Test all authentication methods, TLS configurations, and message handling scenarios.
+  </Step>
+</Steps>
+
+## Complete Migration Example
+
+<Tabs>
+  <Tab title="Before (smtp-server)">
+    ```javascript
+    const { SMTPServer } = require('smtp-server');
+    const { readFileSync } = require('fs');
+    
+    const server = new SMTPServer({
+      secure: false,
+      key: readFileSync('server.key'),
+      cert: readFileSync('server.crt'),
+      authOptional: false,
+      
+      onAuth(auth, session, callback) {
+        if (auth.username === 'user' && auth.password === 'pass') {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error('Invalid credentials'));
+        }
+      },
+      
+      onData(stream, session, callback) {
+        const chunks = [];
+        stream.on('data', (chunk) => chunks.push(chunk));
+        stream.on('end', () => {
+          const message = Buffer.concat(chunks).toString();
+          console.log('Received:', message.length, 'bytes');
+          callback(null);
+        });
+        stream.on('error', callback);
+      },
+    });
+    
+    server.listen(2525, () => {
+      console.log('Server listening on port 2525');
+    });
+    ```
+  </Tab>
+  
+  <Tab title="After (bun-smtp)">
+    ```typescript
+    import { SMTPServer } from 'bun-smtp';
+    import { readFileSync } from 'node:fs';
+    
+    const server = new SMTPServer({
+      secure: false,
+      key: readFileSync('server.key'),
+      cert: readFileSync('server.crt'),
+      authOptional: false,
+      
+      onAuth(auth, session, callback) {
+        if (auth.username === 'user' && auth.password === 'pass') {
+          callback(null, { user: auth.username });
+        } else {
+          callback(new Error('Invalid credentials'));
+        }
+      },
+      
+      onData(stream, session, callback) {
+        async function process() {
+          const chunks: Uint8Array[] = [];
+          for await (const chunk of stream) {
+            chunks.push(chunk);
+          }
+          const message = Buffer.concat(chunks).toString();
+          console.log('Received:', message.length, 'bytes');
+          callback(null);
+        }
+        process().catch(callback);
+      },
+    });
+    
+    server.listen(2525, () => {
+      console.log('Server listening on port 2525');
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Performance Benefits
+
+By switching to bun-smtp, you get:
+
+<CardGroup cols={2}>
+  <Card title="Faster Startup" icon="rocket">
+    Bun's fast runtime means your server starts instantly, perfect for serverless deployments.
+  </Card>
+  
+  <Card title="Lower Memory" icon="memory">
+    Native Web Streams reduce memory overhead compared to Node.js streams.
+  </Card>
+  
+  <Card title="Built-in TypeScript" icon="code">
+    No need for `@types` packages — everything is fully typed out of the box.
+  </Card>
+  
+  <Card title="Modern APIs" icon="sparkles">
+    Web-standard APIs make your code more portable and future-proof.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+<Accordion title="Error: stream.on is not a function">
+  This means you're trying to use Node.js stream methods on a Web ReadableStream. Update your `onData` callback to use `for await...of` instead of `.on()` event listeners.
+  
+  ```typescript
+  // Wrong:
+  stream.on("data", handler);
+  
+  // Correct:
+  for await (const chunk of stream) { /* ... */ }
+  ```
+</Accordion>
+
+<Accordion title="Logger option not recognized">
+  bun-smtp doesn't support the `logger` option. Remove it from your configuration and add logging directly in your callbacks:
+  
+  ```typescript
+  onConnect(session, callback) {
+    console.log(`[${session.id}] Connected:`, session.remoteAddress);
+    callback();
+  }
+  ```
+</Accordion>
+
+<Accordion title="TLS socket methods undefined">
+  In `onSecure`, the socket is a Bun Socket, not a Node.js TLS socket. Use `session.tlsOptions` instead:
+  
+  ```typescript
+  // Wrong:
+  const cipher = socket.getCipher();
+  
+  // Correct:
+  const cipher = session.tlsOptions?.name;
+  ```
+</Accordion>
+
+## Need Help?
+
+If you encounter issues during migration:
+
+- Check the [API Reference](/api/smtp-server) for detailed documentation
+- Review the [source code](https://github.com/wobsoriano/bun-smtp) for implementation details
+- Open an issue on GitHub if you find a compatibility problem

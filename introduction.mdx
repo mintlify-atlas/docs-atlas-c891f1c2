@@ -1,0 +1,98 @@
+---
+title: Introduction
+description: A fast SMTP/LMTP server library built natively on Bun
+---
+
+# Welcome to bun-smtp
+
+A fast SMTP/LMTP server library built natively on Bun, designed to be a drop-in replacement for `smtp-server` with significantly better performance.
+
+## Why bun-smtp?
+
+bun-smtp leverages Bun's native APIs like `Bun.listen()`, `socket.upgradeTLS()`, and `Bun.CryptoHasher` to deliver a high-performance SMTP server without relying on Node.js compatibility layers. If you're already using Bun, bun-smtp provides a seamless, fully-typed experience for handling email.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running in minutes with a minimal SMTP server
+  </Card>
+  <Card title="Authentication Guide" icon="lock" href="/guides/authentication">
+    Learn how to implement SASL authentication (PLAIN, LOGIN, CRAM-MD5, XOAUTH2)
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/smtp-server">
+    Explore the complete API including all options and callbacks
+  </Card>
+  <Card title="Examples" icon="book-open" href="/examples/basic-server">
+    See real-world examples of TLS, authentication, and message handling
+  </Card>
+</CardGroup>
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="Bun-native Performance" icon="gauge-high">
+    Built directly on Bun's native APIs without Node.js compatibility overhead. Uses `Bun.listen()` for optimal socket handling and `Bun.CryptoHasher` for authentication.
+  </Accordion>
+
+  <Accordion title="Drop-in Replacement" icon="arrows-rotate">
+    Same constructor options, callbacks, and event names as `smtp-server`. Migrate with minimal code changes while gaining significant performance improvements.
+  </Accordion>
+
+  <Accordion title="Full SMTP Support" icon="envelope">
+    Implements the complete SMTP protocol including HELO/EHLO, MAIL FROM, RCPT TO, DATA, STARTTLS, LMTP mode, and extension commands like XCLIENT and XFORWARD.
+  </Accordion>
+
+  <Accordion title="SASL Authentication" icon="shield-halved">
+    Built-in support for PLAIN, LOGIN, CRAM-MD5, and XOAUTH2 authentication methods with configurable options for insecure auth and required authentication.
+  </Accordion>
+
+  <Accordion title="TypeScript First" icon="code">
+    Fully typed API with comprehensive TypeScript definitions for all options, callbacks, session data, and authentication objects.
+  </Accordion>
+</AccordionGroup>
+
+## Quick Example
+
+Here's a minimal SMTP server that accepts all messages:
+
+```typescript
+import { SMTPServer } from "bun-smtp";
+
+const server = new SMTPServer({
+  authOptional: true,
+  onData(stream, session, callback) {
+    async function drain() {
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      callback(null);
+    }
+    drain().catch(callback);
+  },
+});
+
+await server.listen(2525);
+console.log("SMTP server listening on port 2525");
+```
+
+## System Requirements
+
+<Info>
+  bun-smtp requires **Bun 1.2.0 or higher**. Make sure you have Bun installed before getting started.
+</Info>
+
+Install Bun if you haven't already:
+
+```bash
+curl -fsSL https://bun.sh/install | bash
+```
+
+## Community & Support
+
+- **GitHub**: [puiusabin/bun-smtp](https://github.com/puiusabin/bun-smtp)
+- **Issues**: [Report bugs or request features](https://github.com/puiusabin/bun-smtp/issues)
+- **npm**: [bun-smtp on npm](https://www.npmjs.com/package/bun-smtp)
+
+## License
+
+bun-smtp is distributed under the MIT License. See the [LICENSE](https://github.com/puiusabin/bun-smtp/blob/main/LICENSE) file for details.
